@@ -1,0 +1,16 @@
+# Python build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Virtual environment
+.venv/
+
+# Config (contains API key, never commit)
+~/.paper-importer/
+
+# macOS
+.DS_Store

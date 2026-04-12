@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paper-importer"
+version = "0.1.0"
+description = "Import academic papers into Obsidian with Chinese translation"
+requires-python = ">=3.10"
+dependencies = [
+    "anthropic>=0.20.0",
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.0",
+    "trafilatura>=1.7.0",
+    "click>=8.1.0",
+    "python-dotenv>=1.0.0",
+    "pymupdf>=1.23.0",
+]
+
+[project.scripts]
+paper = "paper_importer.cli:cli"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["paper_importer*"]

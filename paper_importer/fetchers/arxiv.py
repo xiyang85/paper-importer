@@ -274,15 +274,10 @@ def _extract_figure(
     caption_el = fig_el.select_one(".ltx_caption, figcaption")
     caption = _clean_text(caption_el.get_text()) if caption_el else ""
 
-    # Try to get figure number from caption or id
-    label = ""
+    # Always increment counter so every figure gets a unique filename
+    counter[0] += 1
     m = re.search(r"Figure\s+(\w+)", caption, re.IGNORECASE)
-    if m:
-        label = f"Figure {m.group(1)}"
-    else:
-        counter[0] += 1
-        label = f"Figure {counter[0]}"
-
+    label = f"Figure {m.group(1)}" if m else f"Figure {counter[0]}"
     filename = f"fig{counter[0]}.png"
 
     return Figure(

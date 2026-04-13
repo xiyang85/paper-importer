@@ -8,6 +8,11 @@ from datetime import date
 from pathlib import Path
 
 
+def _is_table_block(para: str) -> bool:
+    """Return True if this paragraph is a Markdown table (has a separator row)."""
+    return bool(re.search(r"^\| ?[-:]+", para, re.MULTILINE))
+
+
 def slugify(text: str) -> str:
     """Convert title to a safe directory/file name."""
     text = text.lower()
@@ -138,12 +143,17 @@ def generate_markdown(
             zh_para = zh_paragraphs[j] if j < len(zh_paragraphs) else ""
             en_para = en_paragraphs[j] if j < len(en_paragraphs) else ""
 
-            if zh_para:
-                lines.append(f"**【中文】** {zh_para}")
+            # Tables: render once as-is, no 【中文】/【English】 prefix
+            if _is_table_block(en_para):
+                lines.append(en_para)
                 lines.append("")
-            if en_para:
-                lines.append(f"**【English】** {en_para}")
-                lines.append("")
+            else:
+                if zh_para:
+                    lines.append(f"**【中文】** {zh_para}")
+                    lines.append("")
+                if en_para:
+                    lines.append(f"**【English】** {en_para}")
+                    lines.append("")
 
         # Figures for this section
         if figures_by_section and i < len(figures_by_section):

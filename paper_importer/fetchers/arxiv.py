@@ -155,57 +155,96 @@ def _extract_abstract(soup: BeautifulSoup) -> str:
 def _extract_sections(
     soup: BeautifulSoup, base_url: str
 ) -> tuple[list[Section], list[Figure]]:
-    sections = []
-    all_figures: list[Figure] = []
-    fig_counter = [0]
-
-    # ar5iv wraps content in ltx_document > ltx_page_main > ltx_document
     body = soup.select_one(".ltx_document") or soup.body or soup
 
-    # Process top-level sections
-    section_els = body.select(
+    # Select ALL section levels in document order:
+    # ltx_section > ltx_subsection > ltx_subsubsection > ltx_paragraph
+    all_sec_els = body.select(
         "section.ltx_section, section.ltx_subsection, "
+        "section.ltx_subsubsection, section.ltx_paragraph, "
         "section.ltx_chapter, section.ltx_appendix"
     )
 
-    if not section_els:
-        # Fallback: treat entire body as one section
+    if not all_sec_els:
         text = _clean_text(body.get_text())
         return [Section(title="Content", content=text)], []
 
-    for sec_el in section_els:
-        # Skip nested sections (we only want top-level)
-        if sec_el.find_parent(
-            "section",
-            class_=re.compile(r"ltx_(section|chapter|appendix)")
-        ):
-            continue
+    sections: list[Section] = []
+    all_figures: list[Figure] = []
+    fig_counter = [0]
 
+    for sec_el in all_sec_els:
         title = _extract_section_title(sec_el)
-        text_parts = []
-        figures = []
+        text_parts: list[str] = []
+        figures: list[Figure] = []
 
-        for child in sec_el.descendants:
+        # Only process DIRECT children — child <section> elements are handled
+        # as their own entries in the outer loop (no double-counting, no merge)
+        for child in sec_el.children:
             if not isinstance(child, Tag):
                 continue
-
-            # Collect paragraphs
-            if child.name == "p" and "ltx_p" in child.get("class", []):
-                text = _clean_text(child.get_text())
-                if text:
-                    text_parts.append(text)
-
-            # Collect figures
-            elif child.name == "figure" and "ltx_figure" in child.get("class", []):
-                fig = _extract_figure(child, base_url, fig_counter)
-                if fig:
-                    figures.append(fig)
-                    all_figures.append(fig)
+            if child.name == "section":
+                continue
+            _collect_content(child, text_parts, figures, fig_counter,
+                             base_url, all_figures)
 
         content = "\n\n".join(text_parts)
-        sections.append(Section(title=title, content=content, figures=figures))
+        if content.strip() or figures:
+            sections.append(Section(title=title, content=content, figures=figures))
 
     return sections, all_figures
+
+
+def _collect_content(
+    el: Tag,
+    text_parts: list[str],
+    figures: list[Figure],
+    fig_counter: list[int],
+    base_url: str,
+    all_figures: list[Figure],
+) -> None:
+    """Recursively collect text and figures from an element.
+    Does NOT cross <section> boundaries."""
+    if not isinstance(el, Tag):
+        return
+
+    # Never recurse into nested sections
+    if el.name == "section":
+        return
+
+    classes: list[str] = el.get("class") or []
+
+    # Paragraph — the main content unit in ar5iv
+    if el.name == "p" and "ltx_p" in classes:
+        text = _clean_text(el.get_text())
+        if text:
+            text_parts.append(text)
+        return
+
+    # Figure
+    if el.name == "figure" and "ltx_figure" in classes:
+        fig = _extract_figure(el, base_url, fig_counter)
+        if fig:
+            figures.append(fig)
+            all_figures.append(fig)
+        return
+
+    # Skip equation tables (inline math rendered as tables by ar5iv)
+    if el.name == "table" and any("ltx_eqn" in c for c in classes):
+        return
+
+    # Data table — extract as plain text
+    if el.name == "table":
+        text = _clean_text(el.get_text())
+        if text and len(text) > 10:
+            text_parts.append(text)
+        return
+
+    # Recurse into everything else (div.ltx_para, div.ltx_noindent, etc.)
+    for child in el.children:
+        if isinstance(child, Tag):
+            _collect_content(child, text_parts, figures, fig_counter,
+                             base_url, all_figures)
 
 
 def _extract_section_title(sec_el: Tag) -> str:

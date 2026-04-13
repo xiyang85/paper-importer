@@ -118,11 +118,21 @@ def _extract_title(soup: BeautifulSoup) -> str:
 
 def _extract_authors(soup: BeautifulSoup) -> list[str]:
     authors = []
-    for el in soup.select(".ltx_personname, .ltx_creator.ltx_role_author"):
-        name = el.get_text(strip=True)
-        if name:
+    for el in soup.select(".ltx_personname"):
+        # Remove footnote markers, superscripts, emails inside the element
+        for junk in el.select("sup, .ltx_note, .ltx_contact"):
+            junk.decompose()
+        name = el.get_text(separator=" ", strip=True)
+        # Drop anything that looks like an email, institution, or footnote blob
+        if "@" in name:
+            continue
+        if len(name) > 60:
+            continue
+        # Keep only entries that look like a person name (at least two words,
+        # starts with uppercase, no digits)
+        if re.match(r"^[A-ZÁÉÍÓÚÀÈÙÂÊÎÔÛÄËÏÖÜÇŁŃŚŹ][a-záéíóúàèùâêîôûäëïöüçłńśź]+\s", name) and not re.search(r"\d", name):
             authors.append(name)
-    return authors or ["Unknown"]
+    return list(dict.fromkeys(authors)) or ["Unknown"]
 
 
 def _extract_year(soup: BeautifulSoup) -> str:

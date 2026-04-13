@@ -221,7 +221,7 @@ def _collect_content(
             text_parts.append(text)
         return
 
-    # Figure
+    # Image figure
     if el.name == "figure" and "ltx_figure" in classes:
         fig = _extract_figure(el, base_url, fig_counter)
         if fig:
@@ -229,11 +229,18 @@ def _collect_content(
             all_figures.append(fig)
         return
 
-    # Skip equation tables (inline math rendered as tables by ar5iv)
+    # Table figure — convert to Markdown table
+    if el.name == "figure" and "ltx_table" in classes:
+        table_md = _extract_table_as_markdown(el)
+        if table_md:
+            text_parts.append(table_md)
+        return
+
+    # Skip inline equation tables (math rendered as <table> by ar5iv)
     if el.name == "table" and any("ltx_eqn" in c for c in classes):
         return
 
-    # Data table — extract as plain text
+    # Bare <table> not wrapped in figure — extract as plain text fallback
     if el.name == "table":
         text = _clean_text(el.get_text())
         if text and len(text) > 10:
@@ -286,6 +293,48 @@ def _extract_figure(
         image_url=image_url,
         filename=filename,
     )
+
+
+def _extract_table_as_markdown(fig_el: Tag) -> str:
+    """Convert an ar5iv <figure class='ltx_table'> into a Markdown table."""
+    cap_el = fig_el.select_one(".ltx_caption, figcaption")
+    caption = _clean_text(cap_el.get_text()) if cap_el else ""
+
+    table_el = fig_el.select_one("table.ltx_tabular, table")
+    if not table_el:
+        return f"**{caption}**" if caption else ""
+
+    # Collect rows; handle both <thead>/<tbody> and bare <tr>
+    all_rows: list[list[str]] = []
+    for tr in table_el.select("tr"):
+        cells = []
+        for cell in tr.select("td, th"):
+            cell_text = _clean_text(cell.get_text()).replace("|", "\\|")
+            cells.append(cell_text)
+        if any(cells):
+            all_rows.append(cells)
+
+    if not all_rows:
+        return f"**{caption}**" if caption else ""
+
+    # Normalise row widths
+    max_cols = max(len(r) for r in all_rows)
+    for row in all_rows:
+        while len(row) < max_cols:
+            row.append("")
+
+    lines: list[str] = []
+    if caption:
+        lines.append(f"**{caption}**")
+        lines.append("")
+
+    # Header row + separator
+    lines.append("| " + " | ".join(all_rows[0]) + " |")
+    lines.append("| " + " | ".join(["---"] * max_cols) + " |")
+    for row in all_rows[1:]:
+        lines.append("| " + " | ".join(row) + " |")
+
+    return "\n".join(lines)
 
 
 def _clean_text(text: str) -> str:

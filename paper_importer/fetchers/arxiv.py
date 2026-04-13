@@ -223,10 +223,9 @@ def _collect_content(
 
     # Image figure
     if el.name == "figure" and "ltx_figure" in classes:
-        fig = _extract_figure(el, base_url, fig_counter)
-        if fig:
-            figures.append(fig)
-            all_figures.append(fig)
+        figs = _extract_figure(el, base_url, fig_counter)
+        figures.extend(figs)
+        all_figures.extend(figs)
         return
 
     # Table figure — convert to Markdown table
@@ -266,33 +265,71 @@ def _extract_section_title(sec_el: Tag) -> str:
 
 def _extract_figure(
     fig_el: Tag, base_url: str, counter: list[int]
-) -> Figure | None:
-    img = fig_el.find("img")
-    if not img:
-        return None
+) -> list[Figure]:
+    """Extract figure(s) from a figure element.
 
-    img_src = img.get("src", "")
-    if not img_src:
-        return None
-
-    # Resolve relative URLs
-    image_url = urllib.parse.urljoin(base_url, img_src)
+    Handles multi-image figures (div.ltx_flex_figure) which contain multiple
+    <img> tags — each gets its own Figure with a sub-label (a, b, c…).
+    Returns a list so callers can use .extend().
+    """
+    imgs = fig_el.select("img")
+    if not imgs:
+        return []
 
     caption_el = fig_el.select_one(".ltx_caption, figcaption")
     caption = _clean_text(caption_el.get_text()) if caption_el else ""
 
-    # Always increment counter so every figure gets a unique filename
-    counter[0] += 1
     m = re.search(r"Figure\s+(\w+)", caption, re.IGNORECASE)
-    label = f"Figure {m.group(1)}" if m else f"Figure {counter[0]}"
-    filename = f"fig{counter[0]}.png"
+    fig_num = m.group(1) if m else None
 
-    return Figure(
-        label=label,
-        caption=caption,
-        image_url=image_url,
-        filename=filename,
-    )
+    results: list[Figure] = []
+    multi = len(imgs) > 1
+    suffixes = "abcdefghijklmnop"
+
+    for i, img in enumerate(imgs):
+        img_src = img.get("src", "")
+        if not img_src:
+            continue
+
+        image_url = urllib.parse.urljoin(base_url, img_src)
+        counter[0] += 1
+        filename = f"fig{counter[0]}.png"
+
+        if fig_num:
+            label = f"Figure {fig_num}{suffixes[i]}" if multi else f"Figure {fig_num}"
+        else:
+            label = f"Figure {counter[0]}{suffixes[i]}" if multi else f"Figure {counter[0]}"
+
+        # Only attach the shared caption to the first sub-image
+        results.append(Figure(
+            label=label,
+            caption=caption if i == 0 else "",
+            image_url=image_url,
+            filename=filename,
+        ))
+
+    return results
+
+
+def _node_to_text(el: Tag) -> str:
+    """Recursively render an element's content to plain text.
+    Math elements are rendered as $LaTeX$ using their alttext attribute."""
+    parts = []
+    for child in el.children:
+        if isinstance(child, Tag):
+            if child.name == "math":
+                alt = child.get("alttext", "")
+                parts.append(f"${alt}$" if alt else child.get_text())
+            else:
+                parts.append(_node_to_text(child))
+        else:
+            parts.append(str(child))
+    return "".join(parts)
+
+
+def _cell_text(cell: Tag) -> str:
+    """Extract table cell text, rendering math as $LaTeX$ and escaping pipes."""
+    return _clean_text(_node_to_text(cell)).replace("|", "\\|")
 
 
 def _extract_table_as_markdown(fig_el: Tag) -> str:
@@ -305,12 +342,14 @@ def _extract_table_as_markdown(fig_el: Tag) -> str:
         return f"**{caption}**" if caption else ""
 
     # Collect rows; handle both <thead>/<tbody> and bare <tr>
+    # colspan is respected by repeating the cell value across spanned columns
     all_rows: list[list[str]] = []
     for tr in table_el.select("tr"):
         cells = []
         for cell in tr.select("td, th"):
-            cell_text = _clean_text(cell.get_text()).replace("|", "\\|")
-            cells.append(cell_text)
+            text = _cell_text(cell)
+            colspan = max(1, int(cell.get("colspan", 1) or 1))
+            cells.extend([text] * colspan)
         if any(cells):
             all_rows.append(cells)
 

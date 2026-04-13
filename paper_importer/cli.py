@@ -16,11 +16,13 @@ from pathlib import Path
 import click
 
 from . import config as cfg
+from . import cache as translation_cache
 from .fetchers import arxiv as arxiv_fetcher
 from .fetchers import generic as generic_fetcher
 from .fetchers import pdf as pdf_fetcher
 from . import translator as trans
 from . import formatter as fmt
+from .validator import Validator
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +249,8 @@ def _import_arxiv(
     no_figures: bool,
     extra_tags: list[str],
 ) -> None:
+    v = Validator()
+
     click.echo(f"Fetching from ar5iv: {url}")
     try:
         paper = arxiv_fetcher.fetch_paper(url)
@@ -258,12 +262,28 @@ def _import_arxiv(
     click.echo(f"  Authors:  {', '.join(paper.authors[:3])}{'...' if len(paper.authors) > 3 else ''}")
     click.echo(f"  Sections: {len(paper.sections)}  Figures: {len(paper.figures)}")
 
+    # --- Stage 1: validate extraction ---
+    v.check_extraction(paper)
+    _print_issues(v, "extraction")
+    if v.has_errors():
+        sys.exit(1)
+
+    # --- Stage 2: translate ---
     click.echo("\nTranslating abstract...")
-    abstract_zh = trans.translate_abstract(paper.abstract, api_key, model)
+    abstract_zh, abs_cached = trans.translate_abstract(paper.abstract, api_key, model)
+    if abs_cached:
+        click.echo("  (cached)")
 
     sections_data = [{"title": s.title, "content": s.content} for s in paper.sections]
-    sections_zh = _translate_with_progress(sections_data, api_key, model)
+    sections_zh, hits, calls = _translate_with_progress(sections_data, api_key, model)
+    _print_cache_stats(hits, calls)
 
+    v.check_translation(sections_data, sections_zh, paper.abstract, abstract_zh)
+    _print_issues(v, "translation")
+    if v.has_errors():
+        sys.exit(1)
+
+    # --- Stage 3: generate markdown ---
     figures_by_section = [s.figures for s in paper.sections]
     tags = ["paper", "arxiv"] + extra_tags
 
@@ -287,9 +307,9 @@ def _import_arxiv(
     dir_name = fmt.make_paper_dir_name(paper.arxiv_id, paper.title)
     md_path = fmt.write_paper_to_vault(vault_path, papers_folder, dir_name, markdown)
     paper_dir = md_path.parent
-
     click.echo(f"\nSaved: {md_path}")
 
+    # --- Stage 4: downloads ---
     if not no_pdf:
         pdf_path = paper_dir / "paper.pdf"
         click.echo("Downloading PDF...")
@@ -308,6 +328,10 @@ def _import_arxiv(
         )
         click.echo(f"  {ok}/{len(paper.figures)} figures saved")
 
+    v.check_downloads(paper_dir, paper)
+    v.check_markdown(paper_dir, markdown)
+    _print_issues(v, "post-download")
+
     click.echo(f"\nDone → {papers_folder}/{dir_name}/index.md")
 
 
@@ -319,6 +343,9 @@ def _import_pdf(
     model: str,
     extra_tags: list[str],
 ) -> None:
+    import shutil
+    v = Validator()
+
     pdf_path = Path(path_str).expanduser().resolve()
     click.echo(f"Reading PDF: {pdf_path.name}")
     try:
@@ -331,16 +358,28 @@ def _import_pdf(
     click.echo(f"  Authors:  {', '.join(content.authors[:3])}")
     click.echo(f"  Sections: {len(content.sections)}")
 
-    abstract_zh = ""
+    v.check_extraction(content)
+    _print_issues(v, "extraction")
+    if v.has_errors():
+        sys.exit(1)
+
+    abstract_zh, _ = ("", False)
     if content.abstract:
         click.echo("Translating abstract...")
-        abstract_zh = trans.translate_abstract(content.abstract, api_key, model)
+        abstract_zh, abs_cached = trans.translate_abstract(content.abstract, api_key, model)
+        if abs_cached:
+            click.echo("  (cached)")
 
     sections_data = [{"title": s.title, "content": s.content} for s in content.sections]
-    sections_zh = _translate_with_progress(sections_data, api_key, model)
+    sections_zh, hits, calls = _translate_with_progress(sections_data, api_key, model)
+    _print_cache_stats(hits, calls)
+
+    v.check_translation(sections_data, sections_zh, content.abstract, abstract_zh)
+    _print_issues(v, "translation")
+    if v.has_errors():
+        sys.exit(1)
 
     tags = ["paper", "pdf"] + extra_tags
-
     markdown = fmt.generate_markdown(
         title=content.title,
         authors=content.authors,
@@ -360,13 +399,13 @@ def _import_pdf(
     md_path = fmt.write_paper_to_vault(vault_path, papers_folder, dir_name, markdown)
     paper_dir = md_path.parent
 
-    # Copy the original PDF into the folder
-    import shutil
     dest_pdf = paper_dir / "paper.pdf"
     if pdf_path != dest_pdf:
         shutil.copy2(pdf_path, dest_pdf)
         click.echo(f"  PDF copied → {dest_pdf.name}")
 
+    v.check_markdown(paper_dir, markdown)
+    _print_issues(v, "post-save")
     click.echo(f"\nDone → {papers_folder}/{dir_name}/index.md")
 
 
@@ -378,6 +417,8 @@ def _import_generic(
     model: str,
     extra_tags: list[str],
 ) -> None:
+    v = Validator()
+
     click.echo(f"Fetching: {url}")
     try:
         content = generic_fetcher.fetch_url(url)
@@ -388,11 +429,21 @@ def _import_generic(
     click.echo(f"  Title:    {content.title}")
     click.echo(f"  Sections: {len(content.sections)}")
 
+    v.check_extraction(content)
+    _print_issues(v, "extraction")
+    if v.has_errors():
+        sys.exit(1)
+
     sections_data = [{"title": s.title, "content": s.content} for s in content.sections]
-    sections_zh = _translate_with_progress(sections_data, api_key, model)
+    sections_zh, hits, calls = _translate_with_progress(sections_data, api_key, model)
+    _print_cache_stats(hits, calls)
+
+    v.check_translation(sections_data, sections_zh, "", "")
+    _print_issues(v, "translation")
+    if v.has_errors():
+        sys.exit(1)
 
     tags = ["article"] + extra_tags
-
     markdown = fmt.generate_markdown(
         title=content.title,
         authors=content.authors,
@@ -410,18 +461,54 @@ def _import_generic(
 
     dir_name = fmt.make_web_dir_name(content.title)
     md_path = fmt.write_paper_to_vault(vault_path, papers_folder, dir_name, markdown)
+
+    v.check_markdown(md_path.parent, markdown)
+    _print_issues(v, "post-save")
     click.echo(f"\nDone → {papers_folder}/{dir_name}/index.md")
 
 
 def _translate_with_progress(
     sections_data: list[dict], api_key: str, model: str
-) -> list[str]:
-    """Translate sections one by one with a progress bar."""
-    sections_zh = []
+) -> tuple[list[str], int, int]:
+    """Translate sections with a progress bar. Returns (translations, cache_hits, api_calls)."""
+    sections_zh: list[str] = []
+    total_hits = 0
+    total_calls = 0
     with click.progressbar(
         sections_data, label="Translating sections", show_eta=True
     ) as bar:
         for sec in bar:
-            zh = trans.translate_sections([sec], api_key, model)
-            sections_zh.extend(zh)
-    return sections_zh
+            zh_list, hits, calls = trans.translate_sections([sec], api_key, model)
+            sections_zh.extend(zh_list)
+            total_hits += hits
+            total_calls += calls
+    return sections_zh, total_hits, total_calls
+
+
+def _print_cache_stats(hits: int, calls: int) -> None:
+    total = hits + calls
+    if total == 0:
+        return
+    if hits == total:
+        click.echo(f"  All {total} sections from cache (0 API calls)")
+    elif hits > 0:
+        click.echo(f"  Cache: {hits}/{total} hits, {calls} API call(s)")
+
+
+def _print_issues(v: Validator, stage: str) -> None:
+    """Print any new issues from the validator."""
+    new = [i for i in v.issues if i.stage in (stage, "extraction", "translation",
+                                                "download", "markdown", "post-download",
+                                                "post-save")]
+    relevant = [i for i in v.issues]
+    if not relevant:
+        return
+    # Only print issues we haven't printed yet — track via a simple set on v
+    if not hasattr(v, "_printed"):
+        v._printed = set()
+    for issue in relevant:
+        key = (issue.level, issue.stage, issue.message)
+        if key not in v._printed:
+            icon = "✗" if issue.level == "ERROR" else "⚠"
+            click.echo(f"  {icon} [{issue.stage}] {issue.message}")
+            v._printed.add(key)

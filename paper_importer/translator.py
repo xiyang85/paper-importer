@@ -9,6 +9,8 @@ import re
 
 import anthropic
 
+from . import cache as translation_cache
+
 SYSTEM_PROMPT = """You are a professional academic translator specializing in translating English academic papers into Chinese.
 
 Translation guidelines:
@@ -26,23 +28,47 @@ def translate_sections(
     sections: list[dict],
     api_key: str,
     model: str = "claude-opus-4-6",
-) -> list[str]:
+) -> tuple[list[str], int, int]:
+    """Translate sections, using cache where available.
+
+    Returns:
+        (translations, cache_hits, api_calls)
+    """
     client = anthropic.Anthropic(api_key=api_key)
     translations = []
+    cache_hits = 0
+    api_calls = 0
+
     for section in sections:
         text = section.get("content", "").strip()
         if not text:
             translations.append("")
             continue
-        translations.append(_translate_text(client, text, model))
-    return translations
+
+        cached = translation_cache.get(model, text)
+        if cached is not None:
+            translations.append(cached)
+            cache_hits += 1
+        else:
+            result = _translate_text(client, text, model)
+            translation_cache.set(model, text, result)
+            translations.append(result)
+            api_calls += 1
+
+    return translations, cache_hits, api_calls
 
 
-def translate_abstract(abstract: str, api_key: str, model: str = "claude-opus-4-6") -> str:
+def translate_abstract(abstract: str, api_key: str, model: str = "claude-opus-4-6") -> tuple[str, bool]:
+    """Translate abstract. Returns (translation, from_cache)."""
     if not abstract.strip():
-        return ""
+        return "", False
+    cached = translation_cache.get(model, abstract)
+    if cached is not None:
+        return cached, True
     client = anthropic.Anthropic(api_key=api_key)
-    return _translate_text(client, abstract, model)
+    result = _translate_text(client, abstract, model)
+    translation_cache.set(model, abstract, result)
+    return result, False
 
 
 def _translate_text(client: anthropic.Anthropic, text: str, model: str) -> str:
